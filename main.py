@@ -35,7 +35,7 @@ import db
 import models as models_module
 import network
 from temp_results import TempResultsTable
-from network import OPENROUTER_API_URL
+from network import OPENROUTER_API_URL, OPENROUTER_MODEL_PREFIX
 
 
 # Диалог добавления модели
@@ -300,6 +300,16 @@ class MainWindow(QMainWindow):
             )
         self.models_table.setSortingEnabled(True)
 
+    def _normalize_model_name(self, name: str, api_url: str) -> str:
+        """Убирает префикс openrouter.ai из name, если api_url — Open Router."""
+        if not name or not api_url:
+            return name
+        if OPENROUTER_MODEL_PREFIX in api_url.strip() and name.startswith(
+            OPENROUTER_MODEL_PREFIX
+        ):
+            return name[len(OPENROUTER_MODEL_PREFIX) :].rstrip("/")
+        return name
+
     def _on_add_model_from_tab(self) -> None:
         name = self.model_name_edit.text().strip()
         url = self.model_url_edit.text().strip()
@@ -309,6 +319,7 @@ class MainWindow(QMainWindow):
                 self, "Модель", "Заполните название, API URL и api_id."
             )
             return
+        name = self._normalize_model_name(name, url)
         db.model_create(
             name, url, api_id, 1 if self.model_active_cb.isChecked() else 0
         )
@@ -411,8 +422,9 @@ class MainWindow(QMainWindow):
                 self, "Модель", "Заполните название, URL и api_id."
             )
             return
+        name = self._normalize_model_name(data["name"], data["api_url"])
         db.model_create(
-            data["name"],
+            name,
             data["api_url"],
             data["api_id"],
             data["is_active"],

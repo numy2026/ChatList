@@ -22,6 +22,23 @@ DEFAULT_TIMEOUT = 60
 
 # Open Router: один endpoint для многих моделей (OpenAI, Anthropic и др.)
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_MODEL_PREFIX = "https://openrouter.ai/"
+
+
+def _model_id_for_request(model_name: str, api_url: str) -> str:
+    """
+    В запрос в API передаётся только id модели (например mistralai/...).
+    Если в поле name введён полный URL Open Router — убираем префикс.
+    """
+    name = (model_name or "").strip()
+    if not name:
+        return name
+    url = (api_url or "").strip()
+    if OPENROUTER_MODEL_PREFIX in url and name.startswith(
+        OPENROUTER_MODEL_PREFIX
+    ):
+        name = name[len(OPENROUTER_MODEL_PREFIX) :].rstrip("/")
+    return name
 
 
 def send_prompt_to_model(
@@ -55,14 +72,15 @@ def send_prompt_to_model(
         out["error"] = "API-ключ не задан (проверьте .env и models.api_id)"
         return out
 
-    _log.info("Запрос: модель=%s, длина промта=%s", model_name, len(prompt))
+    model_for_api = _model_id_for_request(model_name, api_url)
+    _log.info("Запрос: модель=%s, длина промта=%s", model_for_api, len(prompt))
 
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
     payload = {
-        "model": model_name,
+        "model": model_for_api,
         "messages": [{"role": "user", "content": prompt}],
     }
 
