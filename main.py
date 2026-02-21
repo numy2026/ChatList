@@ -19,6 +19,7 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QMenu,
     QPushButton,
+    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
@@ -27,6 +28,7 @@ from PyQt5.QtWidgets import (
     QWidget,
     QLineEdit,
     QAbstractItemView,
+    QGroupBox,
 )
 
 import db
@@ -101,9 +103,13 @@ class MainWindow(QMainWindow):
 
         central = QWidget()
         self.setCentralWidget(central)
-        layout = QVBoxLayout(central)
+        root_layout = QVBoxLayout(central)
 
-        # --- Промт ---
+        tabs = QTabWidget()
+        # --- Вкладка «Запрос» ---
+        tab_request = QWidget()
+        layout = QVBoxLayout(tab_request)
+
         layout.addWidget(QLabel("Промт"))
         prompt_row = QHBoxLayout()
         self.prompt_combo = QComboBox()
@@ -157,14 +163,108 @@ class MainWindow(QMainWindow):
         btn_row2.addStretch()
         layout.addLayout(btn_row2)
 
-        # Меню
+        tabs.addTab(tab_request, "Запрос")
+
+        # --- Вкладка «Модели» ---
+        tab_models = QWidget()
+        layout_m = QVBoxLayout(tab_models)
+
+        grp = QGroupBox("Добавить модель")
+        form = QFormLayout(grp)
+        self.model_name_edit = QLineEdit()
+        self.model_name_edit.setPlaceholderText("openai/gpt-4o или имя модели")
+        form.addRow("Название (name):", self.model_name_edit)
+        self.model_url_edit = QLineEdit()
+        self.model_url_edit.setPlaceholderText(OPENROUTER_API_URL)
+        self.model_url_edit.setText(OPENROUTER_API_URL)
+        form.addRow("API URL:", self.model_url_edit)
+        self.model_api_id_edit = QLineEdit()
+        self.model_api_id_edit.setPlaceholderText("OPENROUTER_API_KEY")
+        self.model_api_id_edit.setText("OPENROUTER_API_KEY")
+        form.addRow("Переменная ключа (api_id):", self.model_api_id_edit)
+        self.model_active_cb = QCheckBox("Активна (участвует в запросах)")
+        self.model_active_cb.setChecked(True)
+        form.addRow("", self.model_active_cb)
+        btn_add_model = QPushButton("Добавить модель")
+        btn_add_model.clicked.connect(self._on_add_model_from_tab)
+        form.addRow("", btn_add_model)
+        layout_m.addWidget(grp)
+
+        layout_m.addWidget(QLabel("Сохранённые модели"))
+        self.models_table = QTableWidget()
+        self.models_table.setColumnCount(5)
+        self.models_table.setHorizontalHeaderLabels(
+            ["ID", "Название", "API URL", "api_id", "Активна"]
+        )
+        hh = self.models_table.horizontalHeader()
+        hh.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(1, QHeaderView.Stretch)
+        layout_m.addWidget(self.models_table)
+        btn_del_model = QPushButton("Удалить выбранную модель")
+        btn_del_model.clicked.connect(self._on_delete_model)
+        layout_m.addWidget(btn_del_model)
+
+        tabs.addTab(tab_models, "Модели")
+
+        # --- Вкладка «Результаты» (сохранённые в БД) ---
+        tab_saved_results = QWidget()
+        layout_r = QVBoxLayout(tab_saved_results)
+        layout_r.addWidget(QLabel("Сохранённые результаты"))
+        search_saved = QHBoxLayout()
+        search_saved.addWidget(QLabel("Поиск:"))
+        self.saved_results_search_edit = QLineEdit()
+        self.saved_results_search_edit.setPlaceholderText(
+            "По модели или ответу..."
+        )
+        self.saved_results_search_edit.textChanged.connect(
+            self._refresh_saved_results_table
+        )
+        search_saved.addWidget(self.saved_results_search_edit)
+        btn_refresh_saved = QPushButton("Обновить")
+        btn_refresh_saved.clicked.connect(self._refresh_saved_results_table)
+        search_saved.addWidget(btn_refresh_saved)
+        layout_r.addLayout(search_saved)
+        self.saved_results_table = QTableWidget()
+        self.saved_results_table.setColumnCount(5)
+        self.saved_results_table.setHorizontalHeaderLabels(
+            ["ID", "Дата", "ID промта", "Модель", "Ответ"]
+        )
+        hr = self.saved_results_table.horizontalHeader()
+        hr.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        hr.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        hr.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        hr.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        hr.setSectionResizeMode(4, QHeaderView.Stretch)
+        layout_r.addWidget(self.saved_results_table)
+        btn_del_result = QPushButton("Удалить выбранный результат")
+        btn_del_result.clicked.connect(self._on_delete_saved_result)
+        layout_r.addWidget(btn_del_result)
+
+        tabs.addTab(tab_saved_results, "Результаты")
+
+        self.tabs = tabs
+        root_layout.addWidget(tabs)
+
+        # Меню: переход к вкладкам
         menubar = self.menuBar()
         menu_models = menubar.addMenu("Модели")
         act_add = menu_models.addAction("Добавить модель…")
         act_add.triggered.connect(self._on_add_model)
+        act_go_models = menu_models.addAction("Перейти к вкладке «Модели»")
+        act_go_models.triggered.connect(lambda: self.tabs.setCurrentIndex(1))
+        menu_results = menubar.addMenu("Результаты")
+        act_go_results = menu_results.addAction(
+            "Перейти к вкладке «Результаты»"
+        )
+        act_go_results.triggered.connect(lambda: self.tabs.setCurrentIndex(2))
 
         self._refresh_prompts_combo()
         self._refresh_results_table()
+        self._refresh_models_table()
+        self._refresh_saved_results_table()
 
     def _refresh_prompts_combo(self) -> None:
         self.prompt_combo.blockSignals(True)
@@ -187,6 +287,120 @@ class MainWindow(QMainWindow):
             self.prompt_edit.setPlainText(p["prompt"])
             self.prompt_edit.blockSignals(False)
 
+    def _refresh_models_table(self) -> None:
+        rows = db.model_list(active_only=False)
+        self.models_table.setRowCount(len(rows))
+        for i, m in enumerate(rows):
+            self.models_table.setItem(i, 0, QTableWidgetItem(str(m["id"])))
+            self.models_table.setItem(i, 1, QTableWidgetItem(m.get("name", "")))
+            self.models_table.setItem(i, 2, QTableWidgetItem(m.get("api_url", "")))
+            self.models_table.setItem(i, 3, QTableWidgetItem(m.get("api_id", "")))
+            self.models_table.setItem(
+                i, 4, QTableWidgetItem("Да" if m.get("is_active") else "Нет")
+            )
+        self.models_table.setSortingEnabled(True)
+
+    def _on_add_model_from_tab(self) -> None:
+        name = self.model_name_edit.text().strip()
+        url = self.model_url_edit.text().strip()
+        api_id = self.model_api_id_edit.text().strip()
+        if not name or not url or not api_id:
+            QMessageBox.warning(
+                self, "Модель", "Заполните название, API URL и api_id."
+            )
+            return
+        db.model_create(
+            name, url, api_id, 1 if self.model_active_cb.isChecked() else 0
+        )
+        self.model_name_edit.clear()
+        self.model_url_edit.setText(OPENROUTER_API_URL)
+        self.model_api_id_edit.setText("OPENROUTER_API_KEY")
+        self.model_active_cb.setChecked(True)
+        self._refresh_models_table()
+        QMessageBox.information(self, "Модель", "Модель добавлена.")
+
+    def _on_delete_model(self) -> None:
+        row = self.models_table.currentRow()
+        if row < 0:
+            QMessageBox.warning(
+                self, "Удаление", "Выберите строку в таблице моделей."
+            )
+            return
+        id_item = self.models_table.item(row, 0)
+        if not id_item:
+            return
+        try:
+            mid = int(id_item.text())
+        except ValueError:
+            return
+        if QMessageBox.question(
+            self,
+            "Удаление",
+            "Удалить выбранную модель?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        ) != QMessageBox.Yes:
+            return
+        db.model_delete(mid)
+        self._refresh_models_table()
+        QMessageBox.information(self, "Модель", "Модель удалена.")
+
+    def _refresh_saved_results_table(self) -> None:
+        rows = db.result_list()
+        q = self.saved_results_search_edit.text().strip().lower()
+        if q:
+            rows = [
+                r for r in rows
+                if q in (r.get("model_name") or "").lower()
+                or q in (r.get("response") or "").lower()
+                or q in str(r.get("prompt_id", "")).lower()
+                or q in (r.get("created_at") or "").lower()
+            ]
+        self.saved_results_table.setSortingEnabled(False)
+        self.saved_results_table.setRowCount(len(rows))
+        for i, r in enumerate(rows):
+            self.saved_results_table.setItem(
+                i, 0, QTableWidgetItem(str(r.get("id", "")))
+            )
+            self.saved_results_table.setItem(
+                i, 1, QTableWidgetItem(r.get("created_at", ""))
+            )
+            self.saved_results_table.setItem(
+                i, 2, QTableWidgetItem(str(r.get("prompt_id", "")))
+            )
+            self.saved_results_table.setItem(
+                i, 3, QTableWidgetItem(r.get("model_name", ""))
+            )
+            resp = r.get("response") or ""
+            self.saved_results_table.setItem(i, 4, QTableWidgetItem(resp))
+        self.saved_results_table.setSortingEnabled(True)
+
+    def _on_delete_saved_result(self) -> None:
+        row = self.saved_results_table.currentRow()
+        if row < 0:
+            QMessageBox.warning(
+                self, "Удаление", "Выберите строку в таблице результатов."
+            )
+            return
+        id_item = self.saved_results_table.item(row, 0)
+        if not id_item:
+            return
+        try:
+            rid = int(id_item.text())
+        except ValueError:
+            return
+        if QMessageBox.question(
+            self,
+            "Удаление",
+            "Удалить выбранный результат?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        ) != QMessageBox.Yes:
+            return
+        db.result_delete(rid)
+        self._refresh_saved_results_table()
+        QMessageBox.information(self, "Результаты", "Результат удалён.")
+
     def _on_add_model(self) -> None:
         dlg = AddModelDialog(self)
         if dlg.exec_() != QDialog.Accepted:
@@ -203,6 +417,7 @@ class MainWindow(QMainWindow):
             data["api_id"],
             data["is_active"],
         )
+        self._refresh_models_table()
         QMessageBox.information(self, "Модель", "Модель добавлена.")
 
     def _on_save_prompt(self) -> None:
@@ -299,6 +514,7 @@ class MainWindow(QMainWindow):
             saved.append(row)
         self.temp_results.remove_saved(saved)
         self._refresh_results_table()
+        self._refresh_saved_results_table()
         QMessageBox.information(
             self, "Сохранение", f"Сохранено строк: {len(saved)}."
         )
