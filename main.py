@@ -23,6 +23,7 @@ from PyQt5.QtWidgets import (
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
+    QTextBrowser,
     QTextEdit,
     QVBoxLayout,
     QHBoxLayout,
@@ -65,6 +66,32 @@ class WordWrapDelegate(QStyledItemDelegate):
         )
         h = max(60, wrapped.height() + 14)
         return QSize(width, h)
+
+
+# Окно просмотра ответа в Markdown
+class ResponseViewDialog(QDialog):
+    def __init__(
+        self,
+        title: str,
+        text: str,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setMinimumSize(500, 400)
+        self.resize(700, 500)
+        layout = QVBoxLayout(self)
+        browser = QTextBrowser()
+        browser.setOpenExternalLinks(True)
+        content = text.strip() or "(пусто)"
+        try:
+            browser.setMarkdown(content)
+        except AttributeError:
+            browser.setPlainText(content)
+        layout.addWidget(browser)
+        close_btn = QPushButton("Закрыть")
+        close_btn.clicked.connect(self.accept)
+        layout.addWidget(close_btn)
 
 
 # Диалог добавления модели
@@ -193,9 +220,12 @@ class MainWindow(QMainWindow):
         btn_row2 = QHBoxLayout()
         self.btn_save_results = QPushButton("Сохранить выбранные")
         self.btn_save_results.clicked.connect(self._on_save_results)
+        self.btn_open_response = QPushButton("Открыть")
+        self.btn_open_response.clicked.connect(self._on_open_response)
         self.btn_export = QPushButton("Экспорт…")
         self.btn_export.clicked.connect(self._on_export)
         btn_row2.addWidget(self.btn_save_results)
+        btn_row2.addWidget(self.btn_open_response)
         btn_row2.addWidget(self.btn_export)
         btn_row2.addStretch()
         layout.addLayout(btn_row2)
@@ -276,9 +306,15 @@ class MainWindow(QMainWindow):
         hr.setSectionResizeMode(3, QHeaderView.ResizeToContents)
         hr.setSectionResizeMode(4, QHeaderView.Stretch)
         layout_r.addWidget(self.saved_results_table)
+        btn_row_saved = QHBoxLayout()
         btn_del_result = QPushButton("Удалить выбранный результат")
         btn_del_result.clicked.connect(self._on_delete_saved_result)
-        layout_r.addWidget(btn_del_result)
+        btn_export_saved = QPushButton("Экспорт…")
+        btn_export_saved.clicked.connect(self._on_export_saved_results)
+        btn_row_saved.addWidget(btn_del_result)
+        btn_row_saved.addWidget(btn_export_saved)
+        btn_row_saved.addStretch()
+        layout_r.addLayout(btn_row_saved)
 
         tabs.addTab(tab_saved_results, "Результаты")
 
@@ -568,6 +604,30 @@ class MainWindow(QMainWindow):
             self, "Сохранение", f"Сохранено строк: {len(saved)}."
         )
 
+    def _on_open_response(self) -> None:
+        rows = self.temp_results.get_rows()
+        q = self.search_edit.text().strip().lower()
+        if q:
+            rows = [
+                r for r in rows
+                if q in (r.get("model_name") or "").lower()
+                or q in (r.get("response") or "").lower()
+                or q in (str(r.get("error") or "")).lower()
+            ]
+        row_idx = self.results_table.currentRow()
+        if row_idx < 0 or row_idx >= len(rows):
+            QMessageBox.warning(
+                self,
+                "Открыть",
+                "Выберите строку в таблице результатов.",
+            )
+            return
+        row = rows[row_idx]
+        model_name = row.get("model_name", "Ответ")
+        text = row.get("response") or row.get("error") or ""
+        dlg = ResponseViewDialog(f"Ответ: {model_name}", text, self)
+        dlg.exec_()
+
     def _on_export(self) -> None:
         rows = self.temp_results.get_selected_rows()
         if not rows:
@@ -575,6 +635,9 @@ class MainWindow(QMainWindow):
         if not rows:
             QMessageBox.warning(self, "Экспорт", "Нет данных для экспорта.")
             return
+        self._export_rows_to_file(rows)
+
+    def _export_rows_to_file(self, rows: List[dict]) -> None:
         path, _ = QFileDialog.getSaveFileName(
             self, "Экспорт", "", "Markdown (*.md);;JSON (*.json);;Все файлы (*)"
         )
@@ -593,6 +656,43 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Экспорт", f"Сохранено: {path}")
         except OSError as e:
             QMessageBox.critical(self, "Ошибка", str(e))
+
+    def _on_export_saved_results(self) -> None:
+        sel = self.saved_results_table.selectionModel().selectedRows()
+        if sel:
+            ids = []
+            for ix in sel:
+                item = self.saved_results_table.item(ix.row(), 0)
+                if item:
+                    try:
+                        ids.append(int(item.text()))
+                    except ValueError:
+                        pass
+            rows = []
+            for rid in ids:
+                r = db.result_get(rid)
+                if r:
+                    rows.append({
+                        "model_name": r.get("model_name", ""),
+                        "response": r.get("response", ""),
+                        "created_at": r.get("created_at", ""),
+                    })
+        else:
+            rows = db.result_list()
+            rows = [
+                {
+                    "model_name": r.get("model_name", ""),
+                    "response": r.get("response", ""),
+                    "created_at": r.get("created_at", ""),
+                }
+                for r in rows
+            ]
+        if not rows:
+            QMessageBox.warning(
+                self, "Экспорт", "Нет результатов для экспорта."
+            )
+            return
+        self._export_rows_to_file(rows)
 
 
 def main() -> None:
