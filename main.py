@@ -4,7 +4,8 @@
 import sys
 from typing import Any, List, Optional
 
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QRect
+from PyQt5.QtGui import QFontMetrics, QPainter
 from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -29,6 +30,8 @@ from PyQt5.QtWidgets import (
     QLineEdit,
     QAbstractItemView,
     QGroupBox,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
 )
 
 import db
@@ -36,6 +39,32 @@ import models as models_module
 import network
 from temp_results import TempResultsTable
 from network import OPENROUTER_API_URL, OPENROUTER_MODEL_PREFIX
+
+
+# Делегат для колонки «Ответ»: перенос по словам, высота строки по содержимому
+class WordWrapDelegate(QStyledItemDelegate):
+    def paint(self, painter, option, index):
+        option_copy = QStyleOptionViewItem(option)
+        self.initStyleOption(option_copy, index)
+        text = option_copy.text or ""
+        painter.save()
+        rect = option_copy.rect.adjusted(4, 2, -4, -2)
+        painter.drawText(rect, Qt.TextWordWrap | Qt.AlignTop, text)
+        painter.restore()
+
+    def sizeHint(self, option, index):
+        value = index.data(Qt.DisplayRole) or ""
+        if not value:
+            return super().sizeHint(option, index)
+        fm = QFontMetrics(option.font)
+        width = max(option.rect.width(), 500)
+        wrapped = fm.boundingRect(
+            QRect(0, 0, width - 16, 3000),
+            Qt.TextWordWrap,
+            value,
+        )
+        h = max(60, wrapped.height() + 14)
+        return QSize(width, h)
 
 
 # Диалог добавления модели
@@ -94,8 +123,8 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("ChatList")
-        self.setMinimumSize(700, 500)
-        self.resize(800, 600)
+        self.setMinimumSize(900, 550)
+        self.resize(1000, 650)
 
         self.current_prompt_id: Optional[int] = None
         self.temp_results = TempResultsTable()
@@ -143,10 +172,18 @@ class MainWindow(QMainWindow):
         layout.addLayout(search_row)
         self.results_table = QTableWidget()
         self.results_table.setColumnCount(3)
-        self.results_table.setHorizontalHeaderLabels(["", "Модель", "Ответ / Ошибка"])
-        self.results_table.horizontalHeader().setSectionResizeMode(
-            2, QHeaderView.Stretch
+        self.results_table.setHorizontalHeaderLabels(
+            ["", "Модель", "Ответ / Ошибка"]
         )
+        h_res = self.results_table.horizontalHeader()
+        h_res.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        h_res.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        h_res.setSectionResizeMode(2, QHeaderView.Stretch)
+        self.results_table.setColumnWidth(2, 560)
+        self.results_table.verticalHeader().setSectionResizeMode(
+            QHeaderView.ResizeToContents
+        )
+        self.results_table.setItemDelegateForColumn(2, WordWrapDelegate(self))
         self.results_table.setSelectionBehavior(
             QAbstractItemView.SelectRows
         )

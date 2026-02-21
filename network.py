@@ -25,6 +25,23 @@ OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_MODEL_PREFIX = "https://openrouter.ai/"
 
 
+def _extract_error_message(response: requests.Response) -> str:
+    """Из ответа с ошибкой извлекает читаемое сообщение (в т.ч. из JSON)."""
+    text = (response.text or "").strip()
+    if not text:
+        return f"HTTP {response.status_code}"
+    try:
+        data = response.json()
+        err = data.get("error")
+        if isinstance(err, dict) and err.get("message"):
+            return f"HTTP {response.status_code}: {err['message']}"
+        if isinstance(err, str):
+            return f"HTTP {response.status_code}: {err}"
+    except ValueError:
+        pass
+    return f"HTTP {response.status_code}: {text[:500]}"
+
+
 def _model_id_for_request(model_name: str, api_url: str) -> str:
     """
     В запрос в API передаётся только id модели (например mistralai/...).
@@ -99,9 +116,9 @@ def send_prompt_to_model(
         return out
 
     if r.status_code >= 400:
-        tail = r.text[:200] if r.text else ""
-        out["error"] = f"HTTP {r.status_code}: {tail}"
-        _log.warning("Ошибка %s: модель=%s %s", r.status_code, model_name, tail)
+        err_msg = _extract_error_message(r)
+        out["error"] = err_msg
+        _log.warning("Ошибка %s: модель=%s %s", r.status_code, model_name, err_msg)
         return out
 
     try:
