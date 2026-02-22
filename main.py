@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, List, Optional
 
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QRect
-from PyQt5.QtGui import QFontMetrics, QIcon, QPainter
+from PyQt5.QtGui import QFont, QFontMetrics, QIcon, QPainter
 from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -21,6 +21,7 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QMenu,
     QPushButton,
+    QSpinBox,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -44,6 +45,32 @@ from temp_results import TempResultsTable
 from network import OPENROUTER_API_URL, OPENROUTER_MODEL_PREFIX
 
 SETTING_IMPROVER_MODEL_ID = "prompt_improver_model_id"
+SETTING_THEME = "theme"
+SETTING_FONT_SIZE = "font_size"
+
+# Тёмная тема (стиль для QApplication)
+DARK_STYLE = """
+    QWidget { background-color: #2d2d2d; color: #e0e0e0; }
+    QMainWindow { background-color: #2d2d2d; }
+    QGroupBox { border: 1px solid #555; border-radius: 4px; margin-top: 8px; }
+    QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }
+    QPushButton { background-color: #404040; color: #e0e0e0; border: 1px solid #555; padding: 6px 12px; }
+    QPushButton:hover { background-color: #505050; }
+    QPushButton:pressed { background-color: #303030; }
+    QLineEdit, QTextEdit, QPlainTextEdit { background-color: #3d3d3d; color: #e0e0e0; border: 1px solid #555; }
+    QComboBox { background-color: #3d3d3d; color: #e0e0e0; border: 1px solid #555; }
+    QTableWidget { background-color: #2d2d2d; color: #e0e0e0; gridline-color: #444; }
+    QHeaderView::section { background-color: #404040; color: #e0e0e0; padding: 4px; }
+    QTabWidget::pane { border: 1px solid #555; background-color: #2d2d2d; }
+    QTabBar::tab { background-color: #404040; color: #e0e0e0; padding: 8px 16px; }
+    QTabBar::tab:selected { background-color: #505050; }
+    QCheckBox { color: #e0e0e0; }
+    QLabel { color: #e0e0e0; }
+    QMenuBar { background-color: #2d2d2d; color: #e0e0e0; }
+    QMenuBar::item:selected { background-color: #505050; }
+    QMenu { background-color: #2d2d2d; color: #e0e0e0; }
+    QMenu::item:selected { background-color: #505050; }
+"""
 
 
 # Делегат для колонки «Ответ»: перенос по словам, высота строки по содержимому
@@ -101,6 +128,48 @@ class ResponseViewDialog(QDialog):
         super().showEvent(event)
         self.raise_()
         self.activateWindow()
+
+
+# Диалог «Настройки»
+class SettingsDialog(QDialog):
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Настройки")
+        layout = QFormLayout(self)
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItem("Светлая", "light")
+        self.theme_combo.addItem("Тёмная", "dark")
+        layout.addRow("Тема:", self.theme_combo)
+        self.font_size_spin = QSpinBox()
+        self.font_size_spin.setRange(8, 24)
+        self.font_size_spin.setSuffix(" pt")
+        layout.addRow("Размер шрифта:", self.font_size_spin)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        layout.addRow(bb)
+
+    def load_from_db(self) -> None:
+        theme = db.setting_get(SETTING_THEME) or "light"
+        idx = self.theme_combo.findData(theme)
+        if idx >= 0:
+            self.theme_combo.setCurrentIndex(idx)
+        try:
+            self.font_size_spin.setValue(
+                int(db.setting_get(SETTING_FONT_SIZE) or "10")
+            )
+        except ValueError:
+            self.font_size_spin.setValue(10)
+
+    def save_to_db(self) -> None:
+        db.setting_set(SETTING_THEME, self.theme_combo.currentData())
+        db.setting_set(SETTING_FONT_SIZE, str(self.font_size_spin.value()))
+
+    def get_theme(self) -> str:
+        return self.theme_combo.currentData() or "light"
+
+    def get_font_size(self) -> int:
+        return self.font_size_spin.value()
 
 
 # Диалог добавления модели
@@ -486,6 +555,12 @@ class MainWindow(QMainWindow):
             "Перейти к вкладке «Результаты»"
         )
         act_go_results.triggered.connect(lambda: self.tabs.setCurrentIndex(2))
+        menu_settings = menubar.addMenu("Настройки")
+        act_settings = menu_settings.addAction("Настройки…")
+        act_settings.triggered.connect(self._on_settings)
+        menu_help = menubar.addMenu("Справка")
+        act_about = menu_help.addAction("О программе")
+        act_about.triggered.connect(self._on_about)
 
         self._refresh_prompts_combo()
         self._refresh_results_table()
@@ -637,6 +712,30 @@ class MainWindow(QMainWindow):
         db.result_delete(rid)
         self._refresh_saved_results_table()
         QMessageBox.information(self, "Результаты", "Результат удалён.")
+
+    def _on_settings(self) -> None:
+        dlg = SettingsDialog(self)
+        dlg.load_from_db()
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        dlg.save_to_db()
+        apply_app_theme_and_font()
+        QMessageBox.information(
+            self, "Настройки", "Настройки сохранены."
+        )
+
+    def _on_about(self) -> None:
+        QMessageBox.about(
+            self,
+            "О программе ChatList",
+            "<h3>ChatList</h3>"
+            "<p>Приложение для отправки одного промта в несколько нейросетей "
+            "и сравнения ответов.</p>"
+            "<p>Вы вводите запрос, выбираете модели, получаете результаты "
+            "в таблице и сохраняете нужные в базу.</p>"
+            "<p>Стек: Python, PyQt5, SQLite, Open Router API.</p>"
+            "<p>Версия: 1.0</p>",
+        )
 
     def _on_add_model(self) -> None:
         dlg = AddModelDialog(self)
@@ -862,9 +961,29 @@ class MainWindow(QMainWindow):
         self._export_rows_to_file(rows)
 
 
+def apply_app_theme_and_font() -> None:
+    """Применяет тему и размер шрифта из БД к текущему QApplication."""
+    app = QApplication.instance()
+    if not app:
+        return
+    theme = db.setting_get(SETTING_THEME) or "light"
+    if theme == "dark":
+        app.setStyleSheet(DARK_STYLE)
+    else:
+        app.setStyleSheet("")
+    try:
+        size = int(db.setting_get(SETTING_FONT_SIZE) or "10")
+    except ValueError:
+        size = 10
+    font = QFont()
+    font.setPointSize(size)
+    app.setFont(font)
+
+
 def main() -> None:
     db.init_db()
     app = QApplication(sys.argv)
+    apply_app_theme_and_font()
     base = Path(__file__).resolve().parent
     icon = QIcon()
     for name in ("app_icon.png", "app.ico"):
