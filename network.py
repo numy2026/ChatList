@@ -92,15 +92,71 @@ def send_prompt_to_model(
     model_for_api = _model_id_for_request(model_name, api_url)
     _log.info("Запрос: модель=%s, длина промта=%s", model_for_api, len(prompt))
 
+    return _request_messages(
+        api_url, api_key, model_for_api, model_id, model_name,
+        [{"role": "user", "content": prompt}],
+        timeout,
+    )
+
+
+def send_messages_to_model(
+    messages: list,
+    model: dict[str, Any],
+    timeout: int = DEFAULT_TIMEOUT,
+) -> dict[str, Any]:
+    """
+    Отправляет список сообщений (system, user, …) в одну модель.
+    messages: [{"role": "system"|"user"|"assistant", "content": "..."}, ...]
+    Возвращает: model_id, model_name, response, error.
+    """
+    model_id = model.get("id")
+    model_name = model.get("name", "")
+    api_url = model.get("api_url", "").strip()
+    api_key = model.get("api_key")
+    out = {
+        "model_id": model_id,
+        "model_name": model_name,
+        "response": None,
+        "error": None,
+    }
+    if not api_url:
+        out["error"] = "Не задан api_url"
+        return out
+    if not api_key:
+        out["error"] = "API-ключ не задан (проверьте .env и models.api_id)"
+        return out
+    model_for_api = _model_id_for_request(model_name, api_url)
+    _log.info(
+        "Запрос (messages): модель=%s, сообщений=%s",
+        model_for_api, len(messages),
+    )
+    return _request_messages(
+        api_url, api_key, model_for_api, model_id, model_name,
+        messages,
+        timeout,
+    )
+
+
+def _request_messages(
+    api_url: str,
+    api_key: str,
+    model_for_api: str,
+    model_id: Any,
+    model_name: str,
+    messages: list,
+    timeout: int,
+) -> dict[str, Any]:
+    out = {
+        "model_id": model_id,
+        "model_name": model_name,
+        "response": None,
+        "error": None,
+    }
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
-    payload = {
-        "model": model_for_api,
-        "messages": [{"role": "user", "content": prompt}],
-    }
-
+    payload = {"model": model_for_api, "messages": messages}
     try:
         r = requests.post(
             api_url,
@@ -118,7 +174,10 @@ def send_prompt_to_model(
     if r.status_code >= 400:
         err_msg = _extract_error_message(r)
         out["error"] = err_msg
-        _log.warning("Ошибка %s: модель=%s %s", r.status_code, model_name, err_msg)
+        _log.warning(
+            "Ошибка %s: модель=%s %s",
+            r.status_code, model_name, err_msg,
+        )
         return out
 
     try:
@@ -127,7 +186,6 @@ def send_prompt_to_model(
         out["error"] = "Ответ не JSON"
         return out
 
-    # OpenAI-формат: choices[0].message.content
     choices = data.get("choices")
     if not choices or not isinstance(choices, list):
         out["error"] = "Неверный формат ответа (нет choices)"
@@ -137,7 +195,10 @@ def send_prompt_to_model(
         out["error"] = "Неверный формат ответа (нет message.content)"
         return out
     out["response"] = msg.get("content") or ""
-    _log.info("Успех: модель=%s, длина ответа=%s", model_name, len(out["response"]))
+    _log.info(
+        "Успех: модель=%s, длина ответа=%s",
+        model_name, len(out["response"]),
+    )
     return out
 
 

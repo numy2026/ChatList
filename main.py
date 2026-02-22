@@ -2,10 +2,11 @@
 """ChatList: отправка промта в несколько моделей, сравнение и сохранение результатов."""
 
 import sys
+from pathlib import Path
 from typing import Any, List, Optional
 
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QRect
-from PyQt5.QtGui import QFontMetrics, QPainter
+from PyQt5.QtGui import QFontMetrics, QIcon, QPainter
 from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -38,8 +39,11 @@ from PyQt5.QtWidgets import (
 import db
 import models as models_module
 import network
+import prompt_improver
 from temp_results import TempResultsTable
 from network import OPENROUTER_API_URL, OPENROUTER_MODEL_PREFIX
+
+SETTING_IMPROVER_MODEL_ID = "prompt_improver_model_id"
 
 
 # Делегат для колонки «Ответ»: перенос по словам, высота строки по содержимому
@@ -83,15 +87,20 @@ class ResponseViewDialog(QDialog):
         layout = QVBoxLayout(self)
         browser = QTextBrowser()
         browser.setOpenExternalLinks(True)
-        content = text.strip() or "(пусто)"
-        try:
+        content = (text or "").strip() or "(пусто)"
+        if hasattr(browser, "setMarkdown"):
             browser.setMarkdown(content)
-        except AttributeError:
+        else:
             browser.setPlainText(content)
         layout.addWidget(browser)
         close_btn = QPushButton("Закрыть")
         close_btn.clicked.connect(self.accept)
         layout.addWidget(close_btn)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self.raise_()
+        self.activateWindow()
 
 
 # Диалог добавления модели
@@ -146,6 +155,147 @@ class SendWorker(QThread):
         self.finished.emit(results)
 
 
+# Поток для улучшения промта (одна модель)
+class ImproveWorker(QThread):
+    finished = pyqtSignal(dict)
+
+    def __init__(self, prompt: str, model: dict) -> None:
+        super().__init__()
+        self.prompt = prompt
+        self.model = model
+
+    def run(self) -> None:
+        result = prompt_improver.improve_prompt(self.prompt, self.model)
+        self.finished.emit(result)
+
+
+# Диалог «Улучшить промт»: выбор модели, результат, кнопки «Подставить»
+class ImprovePromptDialog(QDialog):
+    def __init__(
+        self,
+        original_prompt: str,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Улучшить промт")
+        self.setMinimumSize(520, 480)
+        self.resize(600, 560)
+        self.original_prompt = original_prompt
+        self.on_substitute = None  # callback(text) для подстановки в поле ввода
+        layout = QVBoxLayout(self)
+
+        layout.addWidget(QLabel("Модель для улучшения"))
+        self.model_combo = QComboBox()
+        layout.addWidget(self.model_combo)
+
+        layout.addWidget(QLabel("Исходный промт"))
+        self.original_edit = QTextEdit()
+        self.original_edit.setReadOnly(True)
+        self.original_edit.setPlainText(original_prompt)
+        self.original_edit.setMaximumHeight(100)
+        layout.addWidget(self.original_edit)
+
+        self.btn_run = QPushButton("Улучшить")
+        self.btn_run.clicked.connect(self._run_improve)
+        layout.addWidget(self.btn_run)
+
+        self.status_label = QLabel("")
+        layout.addWidget(self.status_label)
+
+        self.result_widget = QWidget()
+        self.result_layout = QVBoxLayout(self.result_widget)
+        layout.addWidget(self.result_widget)
+        self._result_visible = False
+
+        self._worker = None
+
+    def set_models(self, models: List[dict]) -> None:
+        self.model_combo.clear()
+        for m in models:
+            self.model_combo.addItem(m.get("name", ""), m)
+        saved_id = db.setting_get(SETTING_IMPROVER_MODEL_ID)
+        if saved_id:
+            try:
+                idx = next(
+                    i for i in range(self.model_combo.count())
+                    if self.model_combo.itemData(i).get("id") == int(saved_id)
+                )
+                self.model_combo.setCurrentIndex(idx)
+            except (StopIteration, ValueError):
+                pass
+
+    def _run_improve(self) -> None:
+        model = self.model_combo.currentData()
+        if not model:
+            QMessageBox.warning(
+                self, "Улучшить", "Выберите модель в списке."
+            )
+            return
+        db.setting_set(SETTING_IMPROVER_MODEL_ID, str(model.get("id", "")))
+        self.btn_run.setEnabled(False)
+        self.status_label.setText("Отправка запроса…")
+        self._clear_result()
+        self._worker = ImproveWorker(self.original_prompt, model)
+        self._worker.finished.connect(self._on_finished)
+        self._worker.start()
+
+    def _clear_result(self) -> None:
+        while self.result_layout.count():
+            child = self.result_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+        self._result_visible = False
+
+    def _on_finished(self, result: dict) -> None:
+        self._worker = None
+        self.btn_run.setEnabled(True)
+        self.status_label.setText("")
+        err = result.get("error")
+        if err:
+            QMessageBox.warning(self, "Ошибка", err)
+            return
+        self._show_result(result)
+
+    def _add_substitute_block(
+        self,
+        title: str,
+        text: str,
+    ) -> None:
+        if not (text or "").strip():
+            return
+        grp = QGroupBox(title)
+        lo = QVBoxLayout(grp)
+        te = QTextEdit()
+        te.setReadOnly(True)
+        te.setPlainText(text.strip())
+        te.setMinimumHeight(100)
+        te.setMaximumHeight(180)
+        lo.addWidget(te)
+        btn = QPushButton("Подставить в поле ввода")
+        btn.setFixedHeight(32)
+        btn.clicked.connect(
+            lambda checked=False, t=text.strip(): self._do_substitute(t)
+        )
+        lo.addWidget(btn)
+        self.result_layout.addWidget(grp)
+
+    def _do_substitute(self, text: str) -> None:
+        if self.on_substitute:
+            self.on_substitute(text)
+        self.accept()
+
+    def _show_result(self, result: dict) -> None:
+        self._clear_result()
+        self._add_substitute_block(
+            "Улучшенный промт",
+            result.get("improved") or "",
+        )
+        alternatives = (result.get("alternatives") or [])[:2]
+        for i, alt in enumerate(alternatives, 1):
+            self._add_substitute_block(f"Вариант {i}", alt)
+        self._result_visible = True
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -181,9 +331,12 @@ class MainWindow(QMainWindow):
         btn_row1 = QHBoxLayout()
         self.btn_save_prompt = QPushButton("Сохранить промт")
         self.btn_save_prompt.clicked.connect(self._on_save_prompt)
+        self.btn_improve_prompt = QPushButton("Улучшить промт")
+        self.btn_improve_prompt.clicked.connect(self._on_improve_prompt)
         self.btn_send = QPushButton("Отправить")
         self.btn_send.clicked.connect(self._on_send)
         btn_row1.addWidget(self.btn_save_prompt)
+        btn_row1.addWidget(self.btn_improve_prompt)
         btn_row1.addWidget(self.btn_send)
         btn_row1.addStretch()
         layout.addLayout(btn_row1)
@@ -514,6 +667,26 @@ class MainWindow(QMainWindow):
         self._refresh_prompts_combo()
         QMessageBox.information(self, "Промт", "Промт сохранён.")
 
+    def _on_improve_prompt(self) -> None:
+        prompt = self.prompt_edit.toPlainText().strip()
+        if not prompt:
+            QMessageBox.warning(
+                self, "Улучшить промт", "Введите текст промта."
+            )
+            return
+        models = models_module.get_active_models_with_keys()
+        if not models:
+            QMessageBox.warning(
+                self,
+                "Улучшить промт",
+                "Нет активных моделей. Добавьте модель на вкладке «Модели».",
+            )
+            return
+        dlg = ImprovePromptDialog(prompt, self)
+        dlg.set_models(models)
+        dlg.on_substitute = lambda t: self.prompt_edit.setPlainText(t)
+        dlg.exec_()
+
     def _on_send(self) -> None:
         prompt = self.prompt_edit.toPlainText().strip()
         if not prompt:
@@ -605,26 +778,20 @@ class MainWindow(QMainWindow):
         )
 
     def _on_open_response(self) -> None:
-        rows = self.temp_results.get_rows()
-        q = self.search_edit.text().strip().lower()
-        if q:
-            rows = [
-                r for r in rows
-                if q in (r.get("model_name") or "").lower()
-                or q in (r.get("response") or "").lower()
-                or q in (str(r.get("error") or "")).lower()
-            ]
         row_idx = self.results_table.currentRow()
-        if row_idx < 0 or row_idx >= len(rows):
+        if row_idx < 0:
             QMessageBox.warning(
                 self,
                 "Открыть",
                 "Выберите строку в таблице результатов.",
             )
             return
-        row = rows[row_idx]
-        model_name = row.get("model_name", "Ответ")
-        text = row.get("response") or row.get("error") or ""
+        model_item = self.results_table.item(row_idx, 1)
+        text_item = self.results_table.item(row_idx, 2)
+        model_name = model_item.text() if model_item else "Ответ"
+        text = text_item.text() if text_item else ""
+        if not text.strip():
+            text = "(пусто)"
         dlg = ResponseViewDialog(f"Ответ: {model_name}", text, self)
         dlg.exec_()
 
@@ -698,7 +865,18 @@ class MainWindow(QMainWindow):
 def main() -> None:
     db.init_db()
     app = QApplication(sys.argv)
+    base = Path(__file__).resolve().parent
+    icon = QIcon()
+    for name in ("app_icon.png", "app.ico"):
+        path = base / name
+        if path.exists():
+            icon = QIcon(str(path))
+            break
+    if not icon.isNull():
+        app.setWindowIcon(icon)
     window = MainWindow()
+    if not icon.isNull():
+        window.setWindowIcon(icon)
     window.show()
     sys.exit(app.exec_())
 
